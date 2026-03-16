@@ -159,28 +159,29 @@ def ingest_zip(zip_code: str, scrape_limit: int = 50, scrape_delay: float = 3.0)
     except Exception as e:
         console.print(f"  [red]Redfin for_sale error: {e}[/red]")
 
-    # Step 3: Scrape price history for for-sale properties with Redfin URLs
+    # Step 3: Scrape price history for properties with Redfin URLs
     console.print(f"\n[bold cyan]Step 3: Scraping price history[/bold cyan]")
-    conn = get_connection()
-    rows = conn.execute(
-        """SELECT id, address, city FROM properties
-           WHERE zip_code = ? AND status = 'FOR_SALE'
-             AND property_url LIKE '%redfin.com%'
-           ORDER BY COALESCE(list_price, sold_price) DESC
-           LIMIT ?""",
-        (zip_code, scrape_limit),
-    ).fetchall()
-    conn.close()
+    for scrape_status in ["FOR_SALE", "SOLD"]:
+        conn = get_connection()
+        rows = conn.execute(
+            """SELECT id, address, city FROM properties
+               WHERE zip_code = ? AND status = ?
+                 AND property_url LIKE '%redfin.com%'
+               ORDER BY COALESCE(list_price, sold_price) DESC
+               LIMIT ?""",
+            (zip_code, scrape_status, scrape_limit),
+        ).fetchall()
+        conn.close()
 
-    if rows:
-        console.print(f"  Scraping history for {len(rows)} for-sale properties...")
-        success = 0
-        for row in rows:
-            if scrape_and_store_history(row["id"], delay=scrape_delay):
-                success += 1
-        console.print(f"  [green]Scraped {success}/{len(rows)} properties[/green]")
-    else:
-        console.print("  No Redfin for-sale properties to scrape")
+        if rows:
+            console.print(f"  Scraping history for {len(rows)} {scrape_status} properties...")
+            success = 0
+            for row in rows:
+                if scrape_and_store_history(row["id"], delay=scrape_delay):
+                    success += 1
+            console.print(f"  [green]{scrape_status}: {success}/{len(rows)} scraped[/green]")
+        else:
+            console.print(f"  No Redfin {scrape_status} properties to scrape")
 
     # Step 4: Sync to Supabase
     console.print(f"\n[bold cyan]Step 4: Syncing to Supabase[/bold cyan]")
