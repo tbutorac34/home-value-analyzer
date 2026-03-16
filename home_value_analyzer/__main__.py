@@ -12,6 +12,7 @@ from .ingest_redfin import main as ingest_redfin_cmd
 from .migrate_to_supabase import main as migrate_cmd
 from .ingest_all import main as ingest_all_cmd
 from .deals import main as deals_cmd
+from .estimate import main as estimate_cmd
 
 
 @click.group()
@@ -30,6 +31,7 @@ cli.add_command(ingest_redfin_cmd, name="ingest-redfin")
 cli.add_command(migrate_cmd, name="migrate")
 cli.add_command(ingest_all_cmd, name="ingest-all")
 cli.add_command(deals_cmd, name="deals")
+cli.add_command(estimate_cmd, name="estimate")
 
 
 if __name__ == "__main__":
