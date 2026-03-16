@@ -57,6 +57,9 @@ def download_redfin_data(region_type: str) -> pd.DataFrame:
         compression="gzip",
     )
 
+    # Normalize column names to lowercase
+    df.columns = df.columns.str.lower()
+
     console.print(f"[green]Downloaded {len(df)} rows[/green]")
     return df
 
@@ -75,7 +78,7 @@ def ingest_redfin_market(
 
     # Filter to residential properties
     if "property_type" in df.columns:
-        df = df[df["property_type"] == property_type_filter]
+        df = df[df["property_type"].str.contains("Residential|All", case=False, na=False)]
 
     # Determine region name column
     region_col = None
@@ -85,7 +88,7 @@ def ingest_redfin_market(
             break
 
     if region_col is None:
-        console.print("[red]Could not find region column in data[/red]")
+        console.print(f"[red]Could not find region column in data. Available: {list(df.columns[:10])}[/red]")
         return 0
 
     # Apply region filter if specified

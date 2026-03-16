@@ -20,7 +20,7 @@ class CompResult:
     sqft: int
     price_per_sqft: float
     bedrooms: int
-    bathrooms: float
+    bathrooms_total: float
     year_built: int
     sold_date: str
     distance_miles: float
@@ -34,16 +34,17 @@ class ValuationResult:
     estimated_value: float
     comp_based_value: float
     ppsf_based_value: float
+    source_estimate: float | None
     num_comps: int
     comps: list[CompResult]
-    market_assessment: str  # 'hot', 'balanced', 'cold'
-    value_assessment: str   # 'undervalued', 'fair', 'overvalued'
-    confidence: str         # 'low', 'medium', 'high'
+    market_assessment: str
+    value_assessment: str
+    confidence: str
 
 
 def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance between two points in miles."""
-    R = 3959  # Earth radius in miles
+    R = 3959
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
@@ -53,64 +54,50 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 def find_comps(
     property_id: int,
-    max_distance_miles: float = 0.5,
-    max_age_days: int = 180,
+    max_distance_miles: float = 1.0,
     max_results: int = 10,
-    sqft_tolerance: float = 0.2,
+    sqft_tolerance: float = 0.25,
 ) -> list[CompResult]:
     """Find comparable sold properties for a given property."""
     conn = get_connection()
 
     subject = conn.execute(
-        """SELECT p.*, s.list_price, s.sold_price
-           FROM properties p
-           LEFT JOIN sales s ON s.property_id = p.id
-           WHERE p.id = ?""",
-        (property_id,),
+        "SELECT * FROM properties WHERE id = ?", (property_id,)
     ).fetchone()
 
     if not subject:
         console.print(f"[red]Property {property_id} not found[/red]")
         return []
 
-    if not subject["latitude"] or not subject["longitude"]:
-        console.print("[yellow]Subject property has no coordinates, using ZIP-based comps[/yellow]")
-        comps_query = """
-            SELECT p.*, s.sold_price, s.sold_date, s.price_per_sqft
-            FROM properties p
-            JOIN sales s ON s.property_id = p.id
-            WHERE s.listing_type = 'sold'
-              AND s.sold_price IS NOT NULL
-              AND p.zip_code = ?
-              AND p.id != ?
-              AND p.sqft BETWEEN ? AND ?
-            ORDER BY s.sold_date DESC
-            LIMIT ?
-        """
+    # Get all sold properties
+    if subject["latitude"] and subject["longitude"]:
+        rows = conn.execute(
+            """SELECT * FROM properties
+               WHERE status = 'SOLD'
+                 AND sold_price IS NOT NULL
+                 AND id != ?
+                 AND latitude IS NOT NULL
+               ORDER BY sold_date DESC""",
+            (property_id,),
+        ).fetchall()
+    else:
         sqft = subject["sqft"] or 1500
         min_sqft = int(sqft * (1 - sqft_tolerance))
         max_sqft = int(sqft * (1 + sqft_tolerance))
-
         rows = conn.execute(
-            comps_query, (subject["zip_code"], property_id, min_sqft, max_sqft, max_results)
-        ).fetchall()
-    else:
-        # Get all sold properties in the same general area
-        rows = conn.execute(
-            """SELECT p.*, s.sold_price, s.sold_date, s.price_per_sqft
-               FROM properties p
-               JOIN sales s ON s.property_id = p.id
-               WHERE s.listing_type = 'sold'
-                 AND s.sold_price IS NOT NULL
-                 AND p.id != ?
-                 AND p.latitude IS NOT NULL
-               ORDER BY s.sold_date DESC""",
-            (property_id,),
+            """SELECT * FROM properties
+               WHERE status = 'SOLD'
+                 AND sold_price IS NOT NULL
+                 AND zip_code = ?
+                 AND id != ?
+                 AND sqft BETWEEN ? AND ?
+               ORDER BY sold_date DESC
+               LIMIT ?""",
+            (subject["zip_code"], property_id, min_sqft, max_sqft, max_results * 3),
         ).fetchall()
 
     comps = []
     for row in rows:
-        # Calculate distance
         if subject["latitude"] and row["latitude"]:
             dist = _haversine_miles(
                 subject["latitude"], subject["longitude"],
@@ -125,7 +112,7 @@ def find_comps(
         # Similarity scoring
         score = 100.0
 
-        # Distance penalty (closer is better)
+        # Distance penalty
         score -= (dist / max_distance_miles) * 20
 
         # Sqft similarity
@@ -141,8 +128,8 @@ def find_comps(
             score -= bed_diff * 10
 
         # Bathroom match
-        if subject["bathrooms"] and row["bathrooms"]:
-            bath_diff = abs(subject["bathrooms"] - row["bathrooms"])
+        if subject["bathrooms_total"] and row["bathrooms_total"]:
+            bath_diff = abs(subject["bathrooms_total"] - row["bathrooms_total"])
             score -= bath_diff * 5
 
         # Year built similarity
@@ -162,14 +149,13 @@ def find_comps(
             sqft=row["sqft"] or 0,
             price_per_sqft=row["price_per_sqft"] or 0,
             bedrooms=row["bedrooms"] or 0,
-            bathrooms=row["bathrooms"] or 0,
+            bathrooms_total=row["bathrooms_total"] or 0,
             year_built=row["year_built"] or 0,
             sold_date=row["sold_date"] or "",
             distance_miles=round(dist, 2),
             similarity_score=round(max(score, 0), 1),
         ))
 
-    # Sort by similarity score descending
     comps.sort(key=lambda c: c.similarity_score, reverse=True)
     conn.close()
     return comps[:max_results]
@@ -180,11 +166,7 @@ def estimate_value(property_id: int) -> ValuationResult | None:
     conn = get_connection()
 
     subject = conn.execute(
-        """SELECT p.*, s.list_price, s.sold_price, s.listing_type
-           FROM properties p
-           LEFT JOIN sales s ON s.property_id = p.id
-           WHERE p.id = ?""",
-        (property_id,),
+        "SELECT * FROM properties WHERE id = ?", (property_id,)
     ).fetchone()
 
     if not subject:
@@ -197,7 +179,7 @@ def estimate_value(property_id: int) -> ValuationResult | None:
         console.print("[yellow]No comparable sales found[/yellow]")
         return None
 
-    # Method 1: Weighted average of comp prices (weighted by similarity)
+    # Method 1: Weighted average of comp prices
     total_weight = sum(c.similarity_score for c in comps)
     if total_weight > 0:
         comp_based_value = sum(
@@ -206,19 +188,21 @@ def estimate_value(property_id: int) -> ValuationResult | None:
     else:
         comp_based_value = sum(c.sold_price for c in comps) / len(comps)
 
-    # Method 2: Price-per-sqft from comps applied to subject
+    # Method 2: Price-per-sqft from comps
     ppsf_values = [c.price_per_sqft for c in comps if c.price_per_sqft > 0]
     if ppsf_values and subject["sqft"]:
-        # Weighted median ppsf
         median_ppsf = sorted(ppsf_values)[len(ppsf_values) // 2]
         ppsf_based_value = median_ppsf * subject["sqft"]
     else:
         ppsf_based_value = comp_based_value
 
-    # Blend the two methods
+    # Blend
     estimated_value = round((comp_based_value * 0.6 + ppsf_based_value * 0.4), -2)
 
-    # Get market conditions
+    # Source estimate (Zestimate-like)
+    source_estimate = subject["estimated_value"]
+
+    # Market conditions
     market_stats = conn.execute(
         """SELECT * FROM market_stats
            WHERE region_name LIKE ? AND region_type = 'zip'
@@ -226,21 +210,16 @@ def estimate_value(property_id: int) -> ValuationResult | None:
         (f"%{subject['zip_code']}%",) if subject["zip_code"] else ("%",),
     ).fetchone()
 
-    if market_stats:
+    if market_stats and market_stats["months_of_supply"]:
         mos = market_stats["months_of_supply"]
-        dom = market_stats["median_dom"]
+        market_assessment = "hot" if mos < 3 else "cold" if mos > 6 else "balanced"
+    elif market_stats and market_stats["avg_sale_to_list"]:
         stl = market_stats["avg_sale_to_list"]
-
-        if mos and mos < 3:
-            market_assessment = "hot"
-        elif mos and mos > 6:
-            market_assessment = "cold"
-        else:
-            market_assessment = "balanced"
+        market_assessment = "hot" if stl > 1.0 else "cold" if stl < 0.95 else "balanced"
     else:
         market_assessment = "unknown"
 
-    # Assess value
+    # Value assessment
     list_price = subject["list_price"]
     if list_price and list_price > 0:
         ratio = estimated_value / list_price
@@ -253,7 +232,7 @@ def estimate_value(property_id: int) -> ValuationResult | None:
     else:
         value_assessment = "unknown"
 
-    # Confidence based on number and quality of comps
+    # Confidence
     avg_similarity = sum(c.similarity_score for c in comps) / len(comps) if comps else 0
     if len(comps) >= 5 and avg_similarity > 70:
         confidence = "high"
@@ -270,6 +249,7 @@ def estimate_value(property_id: int) -> ValuationResult | None:
         estimated_value=estimated_value,
         comp_based_value=round(comp_based_value, -2),
         ppsf_based_value=round(ppsf_based_value, -2),
+        source_estimate=source_estimate,
         num_comps=len(comps),
         comps=comps,
         market_assessment=market_assessment,
@@ -285,20 +265,22 @@ def display_valuation(result: ValuationResult) -> None:
     console.print("=" * 60)
 
     if result.list_price:
-        console.print(f"  List Price:       ${result.list_price:>12,.0f}")
-    console.print(f"  Estimated Value:  ${result.estimated_value:>12,.0f}")
-    console.print(f"    Comp-based:     ${result.comp_based_value:>12,.0f}")
-    console.print(f"    PPSF-based:     ${result.ppsf_based_value:>12,.0f}")
+        console.print(f"  List Price:         ${result.list_price:>12,.0f}")
+    console.print(f"  Estimated Value:    ${result.estimated_value:>12,.0f}")
+    console.print(f"    Comp-based:       ${result.comp_based_value:>12,.0f}")
+    console.print(f"    PPSF-based:       ${result.ppsf_based_value:>12,.0f}")
+    if result.source_estimate:
+        console.print(f"    Source estimate:  ${result.source_estimate:>12,.0f}")
 
     if result.list_price and result.list_price > 0:
         diff = result.estimated_value - result.list_price
         pct = (diff / result.list_price) * 100
         color = "green" if diff > 0 else "red"
-        console.print(f"  Difference:       [{color}]${diff:>+12,.0f} ({pct:+.1f}%)[/{color}]")
+        console.print(f"  Difference:         [{color}]${diff:>+12,.0f} ({pct:+.1f}%)[/{color}]")
 
-    console.print(f"  Market:           {result.market_assessment}")
-    console.print(f"  Assessment:       [bold]{result.value_assessment}[/bold]")
-    console.print(f"  Confidence:       {result.confidence} ({result.num_comps} comps)")
+    console.print(f"  Market:             {result.market_assessment}")
+    console.print(f"  Assessment:         [bold]{result.value_assessment}[/bold]")
+    console.print(f"  Confidence:         {result.confidence} ({result.num_comps} comps)")
 
     # Comps table
     console.print()
@@ -318,7 +300,7 @@ def display_valuation(result: ValuationResult) -> None:
             f"${comp.sold_price:,.0f}",
             f"${comp.price_per_sqft:,.0f}" if comp.price_per_sqft else "N/A",
             f"{comp.sqft:,}" if comp.sqft else "N/A",
-            f"{comp.bedrooms}/{comp.bathrooms}",
+            f"{comp.bedrooms}/{comp.bathrooms_total}",
             f"{comp.distance_miles:.2f}",
             f"{comp.similarity_score:.0f}",
             comp.sold_date[:10] if comp.sold_date else "N/A",
@@ -330,7 +312,7 @@ def display_valuation(result: ValuationResult) -> None:
 @click.command()
 @click.option("--address", "-a", default=None, help="Address to look up in the database")
 @click.option("--property-id", "-id", default=None, type=int, help="Property ID in the database")
-@click.option("--radius", "-r", default=0.5, type=float, help="Max comp distance in miles")
+@click.option("--radius", "-r", default=1.0, type=float, help="Max comp distance in miles")
 @click.option("--max-comps", "-n", default=10, type=int, help="Max number of comps")
 def main(address: str | None, property_id: int | None, radius: float, max_comps: int):
     """Analyze a property's fair market value."""
@@ -346,7 +328,7 @@ def main(address: str | None, property_id: int | None, radius: float, max_comps:
         ).fetchone()
         if not row:
             console.print(f"[red]No property found matching '{address}'[/red]")
-            console.print("Try ingesting listings first with: python -m home_value_analyzer.ingest")
+            console.print("Try ingesting listings first with: python -m home_value_analyzer ingest")
             return
         property_id = row["id"]
     else:

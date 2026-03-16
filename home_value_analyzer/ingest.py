@@ -4,7 +4,6 @@ import click
 import pandas as pd
 from homeharvest import scrape_property
 from rich.console import Console
-from rich.table import Table
 
 from .db import get_connection, init_db
 
@@ -92,22 +91,32 @@ def ingest_listings(
 
     conn = get_connection()
     inserted = 0
+    updated = 0
 
     for i in range(len(df)):
         source = _safe_str(_col(df, i, "mls")) or "homeharvest"
         source_id = _safe_str(_col(df, i, "mls_id"))
 
-        # Build full address
-        street = _safe_str(_col(df, i, "street"))
-        unit = _safe_str(_col(df, i, "unit"))
+        # Address - prefer formatted_address, fall back to constructed
+        address = _safe_str(_col(df, i, "formatted_address"))
+        if not address:
+            street = _safe_str(_col(df, i, "street"))
+            unit = _safe_str(_col(df, i, "unit"))
+            parts = [p for p in [street, unit] if p]
+            address = ", ".join(parts) if parts else "Unknown"
+
         city = _safe_str(_col(df, i, "city"))
         state = _safe_str(_col(df, i, "state"))
         zip_code = _safe_str(_col(df, i, "zip_code"))
 
-        address_parts = [p for p in [street, unit] if p]
-        address = ", ".join(address_parts) if address_parts else "Unknown"
-
+        # Numeric fields
         sqft = _safe_int(_col(df, i, "sqft"))
+        full_baths = _safe_int(_col(df, i, "full_baths"))
+        half_baths = _safe_int(_col(df, i, "half_baths"))
+        bathrooms_total = None
+        if full_baths is not None:
+            bathrooms_total = full_baths + (0.5 * (half_baths or 0))
+
         sold_price = _safe_float(_col(df, i, "sold_price"))
         list_price = _safe_float(_col(df, i, "list_price"))
 
@@ -120,21 +129,51 @@ def ingest_listings(
         if sold_price and list_price and list_price > 0:
             list_to_sale = round(sold_price / list_price, 4)
 
+        # Photos - convert list/complex types to strings
+        alt_photos = _col(df, i, "alt_photos")
+        if alt_photos is not None and not isinstance(alt_photos, str):
+            alt_photos = str(alt_photos)
+
+        agent_phones = _col(df, i, "agent_phones")
+        if agent_phones is not None and not isinstance(agent_phones, str):
+            agent_phones = str(agent_phones)
+
         try:
+            # Try insert first
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO properties
-                   (source, source_id, address, city, state, zip_code,
-                    latitude, longitude, property_type, year_built,
-                    sqft, lot_sqft, bedrooms, bathrooms, stories,
-                    garage_spaces, hoa_fee, description)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (source, source_id, property_id, listing_id, property_url, permalink,
+                    address, street, unit, city, state, zip_code, county, fips_code,
+                    latitude, longitude,
+                    property_type, year_built, sqft, lot_sqft,
+                    bedrooms, full_baths, half_baths, bathrooms_total,
+                    stories, garage_spaces, hoa_fee, new_construction,
+                    estimated_value, assessed_value, annual_tax,
+                    status, mls_status,
+                    list_price, list_price_min, list_price_max, sold_price,
+                    list_date, sold_date, pending_date, days_on_mls,
+                    price_per_sqft, list_to_sale_ratio,
+                    last_sold_date, last_sold_price,
+                    last_status_change_date, last_update_date,
+                    agent_name, agent_email, agent_phones, broker_name, office_name,
+                    primary_photo, alt_photos,
+                    description)
+                   VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?, ?,?, ?,?,?,?, ?,?,?,?, ?,?, ?,?, ?,?, ?,?,?,?,?, ?,?, ?)""",
                 (
                     source,
                     source_id,
+                    _safe_str(_col(df, i, "property_id")),
+                    _safe_str(_col(df, i, "listing_id")),
+                    _safe_str(_col(df, i, "property_url")),
+                    _safe_str(_col(df, i, "permalink")),
                     address,
+                    _safe_str(_col(df, i, "street")),
+                    _safe_str(_col(df, i, "unit")),
                     city,
                     state,
                     zip_code,
+                    _safe_str(_col(df, i, "county")),
+                    _safe_str(_col(df, i, "fips_code")),
                     _safe_float(_col(df, i, "latitude")),
                     _safe_float(_col(df, i, "longitude")),
                     _normalize_property_type(_safe_str(_col(df, i, "style"))),
@@ -142,45 +181,74 @@ def ingest_listings(
                     sqft,
                     _safe_int(_col(df, i, "lot_sqft")),
                     _safe_int(_col(df, i, "beds")),
-                    _safe_float(_col(df, i, "full_baths")),
+                    full_baths,
+                    half_baths,
+                    bathrooms_total,
                     _safe_int(_col(df, i, "stories")),
-                    _safe_int(_col(df, i, "garage")),
+                    _safe_int(_col(df, i, "parking_garage")),
                     _safe_float(_col(df, i, "hoa_fee")),
-                    _safe_str(_col(df, i, "description")),
+                    1 if _col(df, i, "new_construction") is True else 0,
+                    _safe_float(_col(df, i, "estimated_value")),
+                    _safe_float(_col(df, i, "assessed_value")),
+                    _safe_float(_col(df, i, "tax")),
+                    _safe_str(_col(df, i, "status")),
+                    _safe_str(_col(df, i, "mls_status")),
+                    list_price,
+                    _safe_float(_col(df, i, "list_price_min")),
+                    _safe_float(_col(df, i, "list_price_max")),
+                    sold_price,
+                    _safe_str(_col(df, i, "list_date")),
+                    _safe_str(_col(df, i, "sold_date")),
+                    _safe_str(_col(df, i, "pending_date")),
+                    _safe_int(_col(df, i, "days_on_mls")),
+                    price_per_sqft,
+                    list_to_sale,
+                    _safe_str(_col(df, i, "last_sold_date")),
+                    _safe_float(_col(df, i, "last_sold_price")),
+                    _safe_str(_col(df, i, "last_status_change_date")),
+                    _safe_str(_col(df, i, "last_update_date")),
+                    _safe_str(_col(df, i, "agent_name")),
+                    _safe_str(_col(df, i, "agent_email")),
+                    agent_phones,
+                    _safe_str(_col(df, i, "broker_name")),
+                    _safe_str(_col(df, i, "office_name")),
+                    _safe_str(_col(df, i, "primary_photo")),
+                    alt_photos,
+                    _safe_str(_col(df, i, "text")),
                 ),
             )
 
-            if cursor.lastrowid and cursor.rowcount > 0:
-                property_id = cursor.lastrowid
+            if cursor.rowcount > 0:
                 inserted += 1
             else:
-                # Property already exists, get its ID
-                row = conn.execute(
-                    "SELECT id FROM properties WHERE source=? AND source_id=?",
-                    (source, source_id),
-                ).fetchone()
-                property_id = row["id"] if row else None
-
-            if property_id:
+                # Property already exists - update with latest data
                 conn.execute(
-                    """INSERT OR IGNORE INTO sales
-                       (property_id, listing_type, list_price, sold_price,
-                        list_date, sold_date, days_on_market,
-                        price_per_sqft, list_to_sale_ratio, source_url)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """UPDATE properties SET
+                        status=?, mls_status=?, list_price=?, sold_price=?,
+                        sold_date=?, pending_date=?, days_on_mls=?,
+                        price_per_sqft=?, list_to_sale_ratio=?,
+                        estimated_value=COALESCE(?, estimated_value),
+                        last_status_change_date=?, last_update_date=?,
+                        updated_at=CURRENT_TIMESTAMP
+                       WHERE source=? AND source_id=?""",
                     (
-                        property_id,
-                        listing_type,
+                        _safe_str(_col(df, i, "status")),
+                        _safe_str(_col(df, i, "mls_status")),
                         list_price,
                         sold_price,
-                        _safe_str(_col(df, i, "list_date")),
                         _safe_str(_col(df, i, "sold_date")),
+                        _safe_str(_col(df, i, "pending_date")),
                         _safe_int(_col(df, i, "days_on_mls")),
                         price_per_sqft,
                         list_to_sale,
-                        _safe_str(_col(df, i, "property_url")),
+                        _safe_float(_col(df, i, "estimated_value")),
+                        _safe_str(_col(df, i, "last_status_change_date")),
+                        _safe_str(_col(df, i, "last_update_date")),
+                        source,
+                        source_id,
                     ),
                 )
+                updated += 1
 
         except Exception as e:
             console.print(f"[red]Error inserting row {i}: {e}[/red]")
@@ -189,7 +257,7 @@ def ingest_listings(
     conn.commit()
     conn.close()
 
-    console.print(f"[bold green]Inserted {inserted} new properties[/bold green]")
+    console.print(f"[bold green]Inserted {inserted} new, updated {updated} existing properties[/bold green]")
     return inserted
 
 

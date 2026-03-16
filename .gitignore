@@ -15,6 +15,7 @@ data/raw/*.csv
 data/raw/*.json
 data/raw/*.xlsx
 !data/raw/.gitkeep
+data/exports/
 
 # Database
 *.db

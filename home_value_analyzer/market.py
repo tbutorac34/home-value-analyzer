@@ -37,14 +37,13 @@ def get_market_summary(zip_code: str | None = None, city: str | None = None) -> 
     if not rows:
         console.print(f"[yellow]No market data found for {region_label}[/yellow]")
         console.print("Try ingesting market data first:")
-        console.print("  python -m home_value_analyzer.ingest_market --region-type zip --region <zip>")
+        console.print("  python -m home_value_analyzer ingest-market --region-type zip --region <zip>")
         return
 
     console.print()
     console.print(f"[bold]Market Summary: {region_label}[/bold]")
     console.print("=" * 80)
 
-    # Latest stats
     latest = rows[0]
 
     console.print()
@@ -79,7 +78,6 @@ def get_market_summary(zip_code: str | None = None, city: str | None = None) -> 
     if latest["pct_price_drops"] is not None:
         console.print(f"  % with Price Drops:    {latest['pct_price_drops']:>11.1f}%")
 
-    # Trend table
     if len(rows) > 1:
         console.print()
         table = Table(title="Recent Trends")
@@ -104,7 +102,6 @@ def get_market_summary(zip_code: str | None = None, city: str | None = None) -> 
 
         console.print(table)
 
-        # YoY comparison if we have 12 months
         if len(rows) >= 12:
             current_price = rows[0]["median_sale_price"]
             year_ago_price = rows[11]["median_sale_price"]
@@ -126,25 +123,26 @@ def list_properties(
     init_db()
     conn = get_connection()
 
-    query = """
-        SELECT p.*, s.list_price, s.sold_price, s.price_per_sqft,
-               s.days_on_market, s.list_to_sale_ratio, s.listing_type, s.source_url
-        FROM properties p
-        JOIN sales s ON s.property_id = p.id
-        WHERE s.listing_type = ?
-    """
-    params: list = [listing_type]
+    status_map = {
+        "for_sale": "FOR_SALE",
+        "sold": "SOLD",
+        "pending": "PENDING",
+    }
+    status = status_map.get(listing_type, listing_type.upper())
+
+    query = "SELECT * FROM properties WHERE status = ?"
+    params: list = [status]
 
     if zip_code:
-        query += " AND p.zip_code = ?"
+        query += " AND zip_code = ?"
         params.append(zip_code)
 
     order_col = {
-        "price_per_sqft": "s.price_per_sqft",
-        "price": "COALESCE(s.sold_price, s.list_price)",
-        "dom": "s.days_on_market",
-        "sqft": "p.sqft",
-    }.get(sort_by, "s.price_per_sqft")
+        "price_per_sqft": "price_per_sqft",
+        "price": "COALESCE(sold_price, list_price)",
+        "dom": "days_on_mls",
+        "sqft": "sqft",
+    }.get(sort_by, "price_per_sqft")
 
     query += f" ORDER BY {order_col} ASC LIMIT ?"
     params.append(limit)
@@ -157,7 +155,7 @@ def list_properties(
 
     table = Table(title=f"{listing_type.replace('_', ' ').title()} Properties")
     table.add_column("ID", justify="right")
-    table.add_column("Address", max_width=35)
+    table.add_column("Address", max_width=40)
     table.add_column("City")
     table.add_column("Price", justify="right")
     table.add_column("$/sqft", justify="right")
@@ -165,19 +163,22 @@ def list_properties(
     table.add_column("Bed/Bath")
     table.add_column("Year")
     table.add_column("DOM", justify="right")
+    table.add_column("Est. Value", justify="right")
 
     for row in rows:
         price = row["sold_price"] or row["list_price"]
+        baths = row["bathrooms_total"] or row["full_baths"] or "?"
         table.add_row(
             str(row["id"]),
-            row["address"][:35] if row["address"] else "N/A",
+            row["address"][:40] if row["address"] else "N/A",
             row["city"] or "N/A",
             f"${price:,.0f}" if price else "N/A",
             f"${row['price_per_sqft']:,.0f}" if row["price_per_sqft"] else "N/A",
             f"{row['sqft']:,}" if row["sqft"] else "N/A",
-            f"{row['bedrooms'] or '?'}/{row['bathrooms'] or '?'}",
+            f"{row['bedrooms'] or '?'}/{baths}",
             str(row["year_built"]) if row["year_built"] else "N/A",
-            str(row["days_on_market"]) if row["days_on_market"] is not None else "N/A",
+            str(row["days_on_mls"]) if row["days_on_mls"] is not None else "N/A",
+            f"${row['estimated_value']:,.0f}" if row["estimated_value"] else "N/A",
         )
 
     console.print(table)

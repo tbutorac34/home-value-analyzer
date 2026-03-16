@@ -26,55 +26,116 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,              -- 'zillow', 'redfin', 'realtor'
-    source_id TEXT,                    -- listing ID from source
-    address TEXT NOT NULL,
+
+    -- Identifiers
+    source TEXT NOT NULL,              -- MLS name (e.g., 'DEMI') or 'homeharvest'
+    source_id TEXT,                    -- mls_id from source
+    property_id TEXT,                  -- realtor.com property_id
+    listing_id TEXT,                   -- realtor.com listing_id
+    property_url TEXT,                 -- full URL to listing
+    permalink TEXT,                    -- realtor.com permalink slug
+
+    -- Address
+    address TEXT NOT NULL,             -- formatted_address or constructed
+    street TEXT,                       -- street line only
+    unit TEXT,
     city TEXT,
     state TEXT,
     zip_code TEXT,
     county TEXT,
+    fips_code TEXT,
     latitude REAL,
     longitude REAL,
+
+    -- Property details
     property_type TEXT,                -- 'single_family', 'condo', 'townhouse', etc.
     year_built INTEGER,
     sqft INTEGER,
     lot_sqft INTEGER,
     bedrooms INTEGER,
-    bathrooms REAL,
+    full_baths INTEGER,
+    half_baths INTEGER,
+    bathrooms_total REAL,              -- computed: full_baths + 0.5 * half_baths
     stories INTEGER,
     garage_spaces INTEGER,
-    has_pool INTEGER,                  -- 0/1
     hoa_fee REAL,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(source, source_id)
-);
+    new_construction INTEGER,          -- 0/1
 
-CREATE TABLE IF NOT EXISTS sales (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    property_id INTEGER NOT NULL REFERENCES properties(id),
-    listing_type TEXT NOT NULL,        -- 'for_sale', 'sold', 'pending'
+    -- Estimated / assessed values
+    estimated_value REAL,              -- AVM estimate from source
+    assessed_value REAL,
+    annual_tax REAL,
+
+    -- Listing status
+    status TEXT,                       -- 'FOR_SALE', 'SOLD', 'PENDING', etc.
+    mls_status TEXT,                   -- human-readable status
+
+    -- Listing details
     list_price REAL,
+    list_price_min REAL,
+    list_price_max REAL,
     sold_price REAL,
     list_date TEXT,
     sold_date TEXT,
-    days_on_market INTEGER,
+    pending_date TEXT,
+    days_on_mls INTEGER,
     price_per_sqft REAL,
     list_to_sale_ratio REAL,
+
+    -- Previous sale
+    last_sold_date TEXT,
+    last_sold_price REAL,
+
+    -- Dates
+    last_status_change_date TEXT,
+    last_update_date TEXT,
+
+    -- Agent / broker info
     agent_name TEXT,
-    source_url TEXT,
+    agent_email TEXT,
+    agent_phones TEXT,                 -- JSON string
+    broker_name TEXT,
+    office_name TEXT,
+
+    -- Media
+    primary_photo TEXT,                -- URL
+    alt_photos TEXT,                   -- URL(s)
+
+    -- Full text
+    description TEXT,                  -- full listing description
+
+    -- Metadata
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(property_id, listing_type, list_date)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, source_id)
 );
 
 CREATE TABLE IF NOT EXISTS price_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     property_id INTEGER NOT NULL REFERENCES properties(id),
     date TEXT NOT NULL,
-    event TEXT,                        -- 'listed', 'price_change', 'pending', 'sold'
+    event TEXT,                        -- 'listed', 'price_change', 'pending', 'sold', 'relisted'
     price REAL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    price_change REAL,                 -- dollar change from previous
+    price_change_pct REAL,             -- percent change from previous
+    source TEXT,                       -- 'zillow', 'redfin', 'realtor'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(property_id, date, event)
+);
+
+CREATE TABLE IF NOT EXISTS tax_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    property_id INTEGER NOT NULL REFERENCES properties(id),
+    year INTEGER NOT NULL,
+    tax_paid REAL,
+    assessed_value REAL,
+    land_value REAL,
+    improvement_value REAL,
+    tax_increase_rate REAL,
+    value_increase_rate REAL,
+    source TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(property_id, year)
 );
 
 CREATE TABLE IF NOT EXISTS market_stats (
@@ -97,22 +158,11 @@ CREATE TABLE IF NOT EXISTS market_stats (
     UNIQUE(region_type, region_name, period, source)
 );
 
-CREATE TABLE IF NOT EXISTS assessments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    property_id INTEGER NOT NULL REFERENCES properties(id),
-    tax_year INTEGER,
-    assessed_value REAL,
-    land_value REAL,
-    improvement_value REAL,
-    tax_amount REAL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(property_id, tax_year)
-);
-
 CREATE INDEX IF NOT EXISTS idx_properties_zip ON properties(zip_code);
 CREATE INDEX IF NOT EXISTS idx_properties_city ON properties(city, state);
 CREATE INDEX IF NOT EXISTS idx_properties_location ON properties(latitude, longitude);
-CREATE INDEX IF NOT EXISTS idx_sales_sold_date ON sales(sold_date);
-CREATE INDEX IF NOT EXISTS idx_sales_listing_type ON sales(listing_type);
+CREATE INDEX IF NOT EXISTS idx_properties_status ON properties(status);
+CREATE INDEX IF NOT EXISTS idx_price_history_property ON price_history(property_id);
+CREATE INDEX IF NOT EXISTS idx_tax_history_property ON tax_history(property_id);
 CREATE INDEX IF NOT EXISTS idx_market_stats_region ON market_stats(region_type, region_name);
 """
