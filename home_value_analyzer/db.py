@@ -1,13 +1,37 @@
-"""Database setup and access layer using SQLite."""
+"""Database access layer. Supports both local SQLite and Supabase."""
 
+import os
 import sqlite3
 from pathlib import Path
 
 DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "home_values.db"
 
 
+def _load_env():
+    """Load .env file if python-dotenv is available."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    except ImportError:
+        pass
+
+
+def get_supabase():
+    """Get a Supabase client, or None if not configured."""
+    _load_env()
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if url and key:
+        try:
+            from supabase import create_client
+            return create_client(url, key)
+        except ImportError:
+            pass
+    return None
+
+
 def get_connection(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """Get a database connection with row factory enabled."""
+    """Get a SQLite connection with row factory enabled."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -17,7 +41,7 @@ def get_connection(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
-    """Create all tables if they don't exist."""
+    """Create SQLite tables if they don't exist (for local fallback)."""
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
     conn.close()
@@ -26,18 +50,14 @@ def init_db(db_path: Path = DEFAULT_DB_PATH) -> None:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS properties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    -- Identifiers
-    source TEXT NOT NULL,              -- MLS name (e.g., 'DEMI') or 'homeharvest'
-    source_id TEXT,                    -- mls_id from source
-    property_id TEXT,                  -- realtor.com property_id
-    listing_id TEXT,                   -- realtor.com listing_id
-    property_url TEXT,                 -- full URL to listing
-    permalink TEXT,                    -- realtor.com permalink slug
-
-    -- Address
-    address TEXT NOT NULL,             -- formatted_address or constructed
-    street TEXT,                       -- street line only
+    source TEXT NOT NULL,
+    source_id TEXT,
+    property_id TEXT,
+    listing_id TEXT,
+    property_url TEXT,
+    permalink TEXT,
+    address TEXT NOT NULL,
+    street TEXT,
     unit TEXT,
     city TEXT,
     state TEXT,
@@ -46,31 +66,23 @@ CREATE TABLE IF NOT EXISTS properties (
     fips_code TEXT,
     latitude REAL,
     longitude REAL,
-
-    -- Property details
-    property_type TEXT,                -- 'single_family', 'condo', 'townhouse', etc.
+    property_type TEXT,
     year_built INTEGER,
     sqft INTEGER,
     lot_sqft INTEGER,
     bedrooms INTEGER,
     full_baths INTEGER,
     half_baths INTEGER,
-    bathrooms_total REAL,              -- computed: full_baths + 0.5 * half_baths
+    bathrooms_total REAL,
     stories INTEGER,
     garage_spaces INTEGER,
     hoa_fee REAL,
-    new_construction INTEGER,          -- 0/1
-
-    -- Estimated / assessed values
-    estimated_value REAL,              -- AVM estimate from source
+    new_construction INTEGER,
+    estimated_value REAL,
     assessed_value REAL,
     annual_tax REAL,
-
-    -- Listing status
-    status TEXT,                       -- 'FOR_SALE', 'SOLD', 'PENDING', etc.
-    mls_status TEXT,                   -- human-readable status
-
-    -- Listing details
+    status TEXT,
+    mls_status TEXT,
     list_price REAL,
     list_price_min REAL,
     list_price_max REAL,
@@ -81,30 +93,18 @@ CREATE TABLE IF NOT EXISTS properties (
     days_on_mls INTEGER,
     price_per_sqft REAL,
     list_to_sale_ratio REAL,
-
-    -- Previous sale
     last_sold_date TEXT,
     last_sold_price REAL,
-
-    -- Dates
     last_status_change_date TEXT,
     last_update_date TEXT,
-
-    -- Agent / broker info
     agent_name TEXT,
     agent_email TEXT,
-    agent_phones TEXT,                 -- JSON string
+    agent_phones TEXT,
     broker_name TEXT,
     office_name TEXT,
-
-    -- Media
-    primary_photo TEXT,                -- URL
-    alt_photos TEXT,                   -- URL(s)
-
-    -- Full text
-    description TEXT,                  -- full listing description
-
-    -- Metadata
+    primary_photo TEXT,
+    alt_photos TEXT,
+    description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source, source_id)
@@ -114,11 +114,11 @@ CREATE TABLE IF NOT EXISTS price_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     property_id INTEGER NOT NULL REFERENCES properties(id),
     date TEXT NOT NULL,
-    event TEXT,                        -- 'listed', 'price_change', 'pending', 'sold', 'relisted'
+    event TEXT,
     price REAL,
-    price_change REAL,                 -- dollar change from previous
-    price_change_pct REAL,             -- percent change from previous
-    source TEXT,                       -- 'zillow', 'redfin', 'realtor'
+    price_change REAL,
+    price_change_pct REAL,
+    source TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(property_id, date, event)
 );
@@ -140,28 +140,27 @@ CREATE TABLE IF NOT EXISTS tax_history (
 
 CREATE TABLE IF NOT EXISTS market_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    region_type TEXT NOT NULL,         -- 'zip', 'city', 'county', 'metro'
+    region_type TEXT NOT NULL,
     region_name TEXT NOT NULL,
-    period TEXT NOT NULL,              -- 'YYYY-MM' or 'YYYY-WW'
+    period TEXT NOT NULL,
     median_sale_price REAL,
     median_list_price REAL,
-    median_ppsf REAL,                 -- price per sqft
+    median_ppsf REAL,
     homes_sold INTEGER,
     new_listings INTEGER,
     active_listings INTEGER,
     months_of_supply REAL,
-    median_dom INTEGER,               -- days on market
-    avg_sale_to_list REAL,            -- ratio
+    median_dom INTEGER,
+    avg_sale_to_list REAL,
     pct_price_drops REAL,
-    source TEXT,                       -- 'redfin', 'fred', 'fhfa'
+    source TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(region_type, region_name, period, source)
 );
 
 CREATE INDEX IF NOT EXISTS idx_properties_zip ON properties(zip_code);
-CREATE INDEX IF NOT EXISTS idx_properties_city ON properties(city, state);
-CREATE INDEX IF NOT EXISTS idx_properties_location ON properties(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_properties_status ON properties(status);
+CREATE INDEX IF NOT EXISTS idx_properties_city ON properties(city, state);
 CREATE INDEX IF NOT EXISTS idx_price_history_property ON price_history(property_id);
 CREATE INDEX IF NOT EXISTS idx_tax_history_property ON tax_history(property_id);
 CREATE INDEX IF NOT EXISTS idx_market_stats_region ON market_stats(region_type, region_name);
