@@ -168,28 +168,38 @@ def scrape_redfin_page(redfin_url: str) -> dict:
         # === JSON DATA EXTRACTION ===
         # Redfin embeds structured data in JSON throughout the page
 
-        # Redfin Estimate
+        # Redfin Estimate - try escaped and unescaped JSON patterns
         for pattern in [
-            r'"predictedValue"\s*:\s*([\d.]+)',
-            r'"redfinEstimateValue"\s*:\s*([\d.]+)',
-            r'"estimatedValue"\s*:\s*([\d.]+)',
-            r'"avm"\s*:\s*\{[^}]*"value"\s*:\s*([\d.]+)',
+            r'predictedValue["\\\s:]*(\d+\.?\d*)',
+            r'Redfin Estimate[^$]*\$([\d,]+)',
         ]:
             m = re.search(pattern, html)
             if m:
-                val = _safe_float(m.group(1))
-                if val and val > 10000:  # sanity check
+                val = _safe_float(m.group(1).replace(",", ""))
+                if val and val > 10000:
                     result["redfin_estimate"] = val
                     break
 
-        # Walk Score / Bike Score
-        m = re.search(r'"walkScore"\s*:\s*\{[^}]*"value"\s*:\s*([\d.]+)', html)
+        # Walk Score / Bike Score - HTML has unicode-escaped JSON quotes
+        # Unescape first for reliable matching
+        html_unescaped = html.replace('\\"', '"')
+
+        m = re.search(r'"walkScore"\s*:\s*\{\s*"value"\s*:\s*([\d.]+)', html_unescaped)
         if m:
             result["walk_score"] = _safe_int(m.group(1))
+        else:
+            # Fallback: match across escaped quotes
+            m = re.search(r'walkScore["\\\s:{}]*value["\\\s:]*([\d.]+)', html)
+            if m:
+                result["walk_score"] = _safe_int(m.group(1))
 
-        m = re.search(r'"bikeScore"\s*:\s*\{[^}]*"value"\s*:\s*([\d.]+)', html)
+        m = re.search(r'"bikeScore"\s*:\s*\{\s*"value"\s*:\s*([\d.]+)', html_unescaped)
         if m:
             result["bike_score"] = _safe_int(m.group(1))
+        else:
+            m = re.search(r'bikeScore["\\\s:{}]*value["\\\s:]*([\d.]+)', html)
+            if m:
+                result["bike_score"] = _safe_int(m.group(1))
 
         # Lot size, garage, parking from JSON
         details = result["property_details"]
