@@ -10,9 +10,8 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from .db import get_connection, init_db
-from .ingest import ingest_listings
 from .ingest_redfin import ingest_redfin_listings
-from .scrape_history import scrape_and_store_history
+from .scrape_redfin import scrape_and_store
 
 console = Console()
 
@@ -135,20 +134,8 @@ def ingest_zip(zip_code: str, scrape_limit: int = 50, scrape_delay: float = 3.0)
     console.print(f"[bold]Processing ZIP: {zip_code}[/bold]")
     console.print(f"[bold]{'='*60}[/bold]")
 
-    # Step 1: HomeHarvest (Realtor.com) - sold + for_sale
-    console.print(f"\n[bold cyan]Step 1: HomeHarvest listings[/bold cyan]")
-    try:
-        ingest_listings(zip_code, listing_type="sold", past_days=180)
-    except Exception as e:
-        console.print(f"  [red]HomeHarvest sold error: {e}[/red]")
-
-    try:
-        ingest_listings(zip_code, listing_type="for_sale", past_days=180)
-    except Exception as e:
-        console.print(f"  [red]HomeHarvest for_sale error: {e}[/red]")
-
-    # Step 2: Redfin CSV download - sold + for_sale
-    console.print(f"\n[bold cyan]Step 2: Redfin CSV listings[/bold cyan]")
+    # Step 1: Redfin CSV download - discover properties + get URLs
+    console.print(f"\n[bold cyan]Step 1: Redfin CSV listings[/bold cyan]")
     try:
         ingest_redfin_listings(zip_code, status="sold", days=180)
     except Exception as e:
@@ -159,8 +146,8 @@ def ingest_zip(zip_code: str, scrape_limit: int = 50, scrape_delay: float = 3.0)
     except Exception as e:
         console.print(f"  [red]Redfin for_sale error: {e}[/red]")
 
-    # Step 3: Scrape price history for properties with Redfin URLs
-    console.print(f"\n[bold cyan]Step 3: Scraping price history[/bold cyan]")
+    # Step 2: Enhanced Redfin page scrape (history + description + photos + details)
+    console.print(f"\n[bold cyan]Step 2: Enhanced Redfin page scrape[/bold cyan]")
     for scrape_status in ["FOR_SALE", "SOLD"]:
         conn = get_connection()
         rows = conn.execute(
@@ -174,17 +161,17 @@ def ingest_zip(zip_code: str, scrape_limit: int = 50, scrape_delay: float = 3.0)
         conn.close()
 
         if rows:
-            console.print(f"  Scraping history for {len(rows)} {scrape_status} properties...")
+            console.print(f"  Scraping {len(rows)} {scrape_status} properties...")
             success = 0
             for row in rows:
-                if scrape_and_store_history(row["id"], delay=scrape_delay):
+                if scrape_and_store(row["id"], delay=scrape_delay):
                     success += 1
             console.print(f"  [green]{scrape_status}: {success}/{len(rows)} scraped[/green]")
         else:
             console.print(f"  No Redfin {scrape_status} properties to scrape")
 
-    # Step 4: Sync to Supabase
-    console.print(f"\n[bold cyan]Step 4: Syncing to Supabase[/bold cyan]")
+    # Step 3: Sync to Supabase
+    console.print(f"\n[bold cyan]Step 3: Syncing to Supabase[/bold cyan]")
     conn = get_connection()
     _migrate_new_data_to_supabase(conn)
     conn.close()

@@ -105,10 +105,38 @@ CREATE TABLE IF NOT EXISTS properties (
     primary_photo TEXT,
     alt_photos TEXT,
     description TEXT,
+    redfin_estimate REAL,
+    walk_score INTEGER,
+    bike_score INTEGER,
+    flood_risk TEXT,
+    heating TEXT,
+    cooling TEXT,
+    construction_type TEXT,
+    roof_type TEXT,
+    foundation_type TEXT,
+    sewer TEXT,
+    water_source TEXT,
+    appliances TEXT,
+    laundry TEXT,
+    school_rating REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source, source_id)
 );
+
+CREATE TABLE IF NOT EXISTS property_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    property_id INTEGER NOT NULL REFERENCES properties(id),
+    url TEXT NOT NULL,
+    position INTEGER,
+    caption TEXT,
+    room_type TEXT,
+    condition_score REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(property_id, url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_photos_property ON property_photos(property_id);
 
 CREATE TABLE IF NOT EXISTS price_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
