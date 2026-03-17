@@ -130,6 +130,31 @@ This is the cleanest approach but slower (one HTTP request per property vs bulk 
 **Status:** Ad-hoc
 **Description:** Currently we manually sync to Supabase after scraping. Should be automatic at the end of every pipeline run. Already partially implemented in `ingest-all` but not all scripts use it.
 
+### IMP-8: Extract climate risk scores from Redfin pages
+**Priority:** P1
+**Status:** Not started — waiting for current backfill to complete
+**Description:** Redfin pages contain First Street Foundation climate risk scores (1-10 scale) for flood, fire, heat, and wind. These directly affect property value and insurance costs. Add extraction patterns:
+- Flood factor: `[Ff]lood.*?(\d+)/10`
+- Fire factor: `[Ff]ire.*?(\d+)/10`
+- Heat factor: `[Hh]eat.*?(\d+)/10`
+- Wind factor: `[Ww]ind.*?(\d+)/10`
+- New columns on properties: `flood_factor`, `fire_factor`, `heat_factor`, `wind_factor` (all INTEGER 1-10)
+
+### IMP-9: Extract Redfin's comparable homes
+**Priority:** P2
+**Status:** Not started — waiting for current backfill to complete
+**Description:** Redfin pages show their own comparable home suggestions. Extracting these lets us compare our comp selection to Redfin's. Could also populate comps for properties where we don't have enough local sold data.
+
+### IMP-10: Extract annual tax amount
+**Priority:** P2
+**Status:** Not started
+**Description:** Tax amount is on the page (e.g., "$3,223"). Useful for buyer cost estimation. Pattern: `[Tt]ax.*?\$(\d[\d,]+)`. Store in `properties.annual_tax`.
+
+### IMP-11: Extract transit score
+**Priority:** P2
+**Status:** Not started
+**Description:** Some pages have transit score in addition to walk/bike. Pattern TBD — may need unescaped JSON matching like walk score.
+
 ---
 
 ## Decision: Keep or Drop HomeHarvest?
