@@ -13,6 +13,7 @@ from .migrate_to_supabase import main as migrate_cmd
 from .ingest_all import main as ingest_all_cmd
 from .deals import main as deals_cmd
 from .estimate import main as estimate_cmd
+from .adjustments import main as adjustments_cmd
 
 
 @click.group()
@@ -32,6 +33,7 @@ cli.add_command(migrate_cmd, name="migrate")
 cli.add_command(ingest_all_cmd, name="ingest-all")
 cli.add_command(deals_cmd, name="deals")
 cli.add_command(estimate_cmd, name="estimate")
+cli.add_command(adjustments_cmd, name="adjustments")
 
 
 if __name__ == "__main__":

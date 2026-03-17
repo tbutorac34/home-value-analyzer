@@ -57,7 +57,7 @@ def scrape_redfin_history(redfin_url: str) -> dict:
 
     Returns dict with 'price_history' and 'tax_history' lists.
     """
-    result = {"price_history": [], "tax_history": [], "error": None}
+    result = {"price_history": [], "tax_history": [], "description": None, "error": None}
 
     try:
         resp = requests.get(redfin_url, headers=_get_headers(), timeout=20)
@@ -126,6 +126,21 @@ def scrape_redfin_history(redfin_url: str) -> dict:
                 "tax_paid": _parse_price(tax_raw),
                 "assessed_value": _parse_price(assessment_raw),
             })
+
+        # Extract listing description
+        desc_match = re.search(
+            r'<div[^>]*class="[^"]*remarks[^"]*"[^>]*>(.*?)</div>',
+            html,
+            re.DOTALL,
+        )
+        if desc_match:
+            desc_text = re.sub(r"<[^>]+>", "", desc_match.group(1)).strip()
+            # Decode HTML entities
+            desc_text = desc_text.replace("&rsquo;", "'").replace("&lsquo;", "'")
+            desc_text = desc_text.replace("&rdquo;", '"').replace("&ldquo;", '"')
+            desc_text = desc_text.replace("&amp;", "&").replace("&nbsp;", " ")
+            if len(desc_text) > 20:
+                result["description"] = desc_text
 
     except requests.RequestException as e:
         result["error"] = str(e)
@@ -235,11 +250,19 @@ def scrape_and_store_history(
         except Exception as e:
             console.print(f"  [red]Error storing tax history: {e}[/red]")
 
+    # Store description if we got one and property doesn't have one
+    if result["description"] and not prop["description"]:
+        conn.execute(
+            "UPDATE properties SET description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (result["description"], db_property_id),
+        )
+
     conn.commit()
     conn.close()
 
-    console.print(f"  [green]Stored {ph_count} price events, {th_count} tax records[/green]")
-    return ph_count > 0 or th_count > 0
+    desc_note = ", +description" if result["description"] and not prop["description"] else ""
+    console.print(f"  [green]Stored {ph_count} price events, {th_count} tax records{desc_note}[/green]")
+    return ph_count > 0 or th_count > 0 or bool(result["description"])
 
 
 def display_history(db_property_id: int) -> None:
